@@ -12,3 +12,289 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+
+model Customer {
+  id        String   @id @default(cuid())
+  name      String
+  plan      String   @default("free")
+  status    String   @default("active")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships Membership[]
+  invitations Invitation[]
+
+  // 推奨：参照しやすくする
+  diagnostics Diagnostic[]
+  assets      Asset[]
+  runs        Run[]
+}
+
+model User {
+  // Supabase Auth の user.id（UUID）を入れる
+  id        String   @id
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships Membership[]
+  sentInvites Invitation[] @relation("InvitedBy")
+
+  // 推奨：作成者参照をしやすくする
+  createdDiagnostics Diagnostic[] @relation("DiagnosticCreatedBy")
+  createdAssets      Asset[]      @relation("AssetCreatedBy")
+}
+
+model Membership {
+  id         String   @id @default(cuid())
+  customerId String
+  userId     String
+  role       String   @default("editor") // owner/admin/editor/viewer
+  status     String   @default("active") // active/disabled
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  customer Customer @relation(fields: [customerId], references: [id])
+  user     User     @relation(fields: [userId], references: [id])
+
+  @@unique([customerId, userId])
+  @@index([userId])
+  @@index([customerId])
+}
+
+model Invitation {
+  id         String   @id @default(cuid())
+  customerId String
+  email      String
+  role       String   @default("editor")
+  token      String   @unique
+  expiresAt  DateTime
+  acceptedAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime @default(now())
+
+  invitedByUserId String?
+  invitedBy       User?    @relation("InvitedBy", fields: [invitedByUserId], references: [id])
+
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  @@index([customerId, email])
+  @@index([customerId, createdAt])
+  @@index([invitedByUserId])
+}
+
+model Diagnostic {
+  id              String   @id @default(cuid())
+  customerId       String
+  title           String
+  slug            String
+  status          String   @default("draft") // draft/published/archived
+  createdByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  publishedAt     DateTime?
+
+  customer  Customer @relation(fields: [customerId], references: [id])
+
+  // 推奨：作成者をFKでつなぐ
+  createdBy User? @relation("DiagnosticCreatedBy", fields: [createdByUserId], references: [id])
+
+  // 推奨：参照しやすくする
+  questions Question[]
+  outcomes  Outcome[]
+  rules     Rule[]
+  runs      Run[]
+
+  @@unique([customerId, slug])
+  @@index([customerId, status])
+  @@index([createdByUserId])
+}
+
+model Question {
+  id           String   @id @default(cuid())
+  diagnosticId String
+  orderNo      Int
+  type         String   // single/multi/text/number
+  title        String
+  description  String?
+  isRequired   Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  diagnostic Diagnostic @relation(fields: [diagnosticId], references: [id])
+  choices    Choice[]
+  answers      Answer[]
+
+  @@unique([diagnosticId, orderNo])
+  @@index([diagnosticId, orderNo])
+}
+
+model Choice {
+  id         String   @id @default(cuid())
+  questionId String
+  orderNo    Int
+  label      String
+
+  // 推奨：自動生成で使うなら基本必須にする（null混入を防ぐ）
+  value      String
+
+  scoreJson  Json?    // A/D用の加点。不要ならnull
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  question   Question @relation(fields: [questionId], references: [id])
+
+  @@unique([questionId, orderNo])
+  @@unique([questionId, value]) // 推奨：同一question内でvalue一意
+  @@index([questionId, orderNo])
+}
+
+model Outcome {
+  id           String   @id @default(cuid())
+  diagnosticId String
+
+  kind         String   // "type" | "recommendation"
+  key          String   // "leader" / "basic_plan" など
+  title        String
+  description  String?
+  contentJson  Json?
+  ctaLabel     String?
+  ctaUrl       String?
+
+  priority     Int      @default(100)
+  isActive     Boolean  @default(true)
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  diagnostic   Diagnostic @relation(fields: [diagnosticId], references: [id])
+
+  // 推奨：OutcomeAssetの逆relation（Asset紐づけの取得が楽）
+  assets       OutcomeAsset[]
+
+  @@unique([diagnosticId, kind, key])
+  @@index([diagnosticId, kind])
+}
+
+model Rule {
+  id            String   @id @default(cuid())
+  diagnosticId  String
+  priority      Int      @default(100)
+  name          String?
+  status        String   @default("active") // active/disabled
+  conditionJson Json
+  actionJson    Json
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  diagnostic Diagnostic @relation(fields: [diagnosticId], references: [id])
+
+  @@index([diagnosticId, priority])
+  @@index([diagnosticId, status])
+}
+
+model Asset {
+  id              String   @id @default(cuid())
+  customerId      String
+  type            String   @default("image") // image
+  storageProvider String   @default("supabase")
+  storageBucket   String
+  storagePath     String
+  publicUrl       String?
+  mimeType        String?
+  sizeBytes       Int?
+  width           Int?
+  height          Int?
+  altText         String?
+  createdByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  customer     Customer @relation(fields: [customerId], references: [id])
+  createdBy    User?    @relation("AssetCreatedBy", fields: [createdByUserId], references: [id])
+
+  outcomeLinks OutcomeAsset[]
+
+  @@index([customerId, createdAt])
+  @@index([createdByUserId])
+
+  // 既存のままでOK（storageがグローバル一意なら）
+  @@unique([storageProvider, storageBucket, storagePath])
+}
+
+model OutcomeAsset {
+  id        String   @id @default(cuid())
+  outcomeId String
+  assetId   String
+  role      String   // hero/thumbnail/ogp
+  orderNo   Int      @default(0)
+  createdAt DateTime @default(now())
+
+  outcome   Outcome @relation(fields: [outcomeId], references: [id])
+  asset     Asset   @relation(fields: [assetId], references: [id])
+
+  @@unique([outcomeId, role, orderNo])
+  @@index([assetId])
+  @@index([outcomeId, role])
+}
+
+model Run {
+  id                 String   @id @default(cuid())
+  diagnosticId       String
+  customerId         String
+
+  status             String   @default("started") // started/completed/abandoned
+  startedAt          DateTime @default(now())
+  completedAt        DateTime?
+
+  resultKind         String?  // type/recommendation
+  resultOutcomeKey   String?
+  resultOutcomeKeys  Json?
+  resultScoreJson    Json?
+  resultRuleTraceJson Json?
+
+  utmSource          String?
+  utmMedium          String?
+  utmCampaign        String?
+  referrer           String?
+  device             String?
+
+  diagnostic         Diagnostic @relation(fields: [diagnosticId], references: [id])
+  customer           Customer   @relation(fields: [customerId], references: [id])
+
+  answers            Answer[]
+
+  @@index([diagnosticId, startedAt])
+  @@index([customerId, startedAt])
+  @@index([status])
+}
+
+model Answer {
+  id           String   @id @default(cuid())
+  runId        String
+  questionId   String
+  type         String   // single/multi/text/number
+
+  // 方針確定：choice_id保存
+  choiceId      String?
+  choiceIdsJson Json?
+  textValue     String?
+  numberValue   Float?
+
+  createdAt    DateTime @default(now())
+
+  // 必須修正（推奨度高）：upsert/再回答で更新日時が必要
+  updatedAt    DateTime @updatedAt
+
+  run          Run      @relation(fields: [runId], references: [id])
+  question     Question @relation(fields: [questionId], references: [id])
+
+  // 参照の正しさを上げたい場合はこれも追加可能（任意）
+  // choice       Choice?   @relation(fields: [choiceId], references: [id])
+
+  @@unique([runId, questionId])
+  @@index([runId])
+  @@index([questionId])
+}
